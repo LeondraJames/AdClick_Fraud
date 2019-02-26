@@ -1,0 +1,618 @@
+---
+title: 'Harvard University Professional Certificate in Data Science Capstone Project:
+  Ad Tracking Fraud Detection'
+author: "Leondra R. James"
+date: "February 25, 2019"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+# Executive Summary
+
+
+## The Dataset
+
+China is the largest mobile market in the world. With over 1 billion active smart mobile devices,  China has a concern with the large volumes of fraudulent ad click traffic. Click fraud can occur at a very significant volume, resulting in misleading click data, which therefore influences the price from ad channels. 
+
+The data used in this capstone is from the ["TalkingData AdTracking Fraud Detection Challange"](https://www.kaggle.com/c/talkingdata-adtracking-fraud-detection#description) launched on Kaggle about 10 months ago. The data was provided by China's largest independent big data service platform (covers over 70% of active mobile devices in the country), TalkingData.
+
+
+## The Assignment
+
+![](https://article.images.consumerreports.org/prod/content/dam/CRO%20Images%202018/Money/May/CR-Money-InlineHero-Cellphone-Account-Fraud-05-18)
+
+This project was inspired by the "TalkingData AdTracking Fraud Detection Challenge" on Kaggle, where the goal is to predict whether a user will download an app after clicking a mobile app ad. TalkingData's current approach for detecting fraud is to measure the journey of a user's click across their portfolio and flag IP addresses who produce various clicks and yet never downloads an app. This is an assumed indication that the ad clicking is fraudulent, rather than legitimate. With this information, they maintain an IP and device blacklist, which ultimately prevents wasted funds invested in ad channels. 
+
+## Methods & Process
+
+My approach and process follows the ["Cross-Industry Process for Data Mining (CRISP-DM)"](https://www.sv-europe.com/crisp-dm-methodology/) methodology very closely with some minor alterations as to honor the purpose of the course capstone. This process includes the following steps:
+
+![](https://i.pinimg.com/originals/d3/fe/6d/d3fe6d904580fa4e642225ae6d18f0da.jpg)
+
+
+We have already briefly gathered an understanding of the business issue, which was originally presented by TalkingData as a Kaggle competition. The next steps will include understanding the data, cleaning the data, undergoing an exporatory data analysis (or EDA), followed by modeling the data and validating the results. The algorithms used to predict the binary outcome of "download" or "no download" are: **decision tree, random forest, linear support vector machine and radial kernal support vector machine**. 
+
+The final step is this final product (an R script, Rmd, and PDF file). Below details the exact steps taken in this capstone project. 
+
+### 1. Import Libraries & Data
+### 2. Preliminary Look at the Data
+### 3. Data Cleaning & Feature Engineering
+### 4. Exploratory Data Analysis (EDA) & Visualization 
+### 5. Cross Validation & Modeling
+### 6. Results Evaluation
+### 7. Conclusion
+
+
+## Import Libraries & Data
+
+The following code was used to load the appropriate libraries and datasets.
+
+```{r message=FALSE}
+library(lubridate)
+library(caret)
+library(dplyr)
+library(DMwR)
+library(ROSE)
+library(ggplot2)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(data.table)
+library(e1071)
+library(gridExtra)
+library(knitr)
+library(caTools)
+
+train <-fread('C:/Users/leojames/Documents/Myself/HarvardX/train_sample.csv', stringsAsFactors = FALSE, 
+              data.table = FALSE)
+test_valid <-fread('C:/Users/leojames/Documents/Myself/HarvardX/test.csv', stringsAsFactors = FALSE, 
+                   data.table = FALSE)
+```
+
+The `train` set will be used for data partitioning (train and test set), whereas the `test_valid` set will be used later for new predictions on unseen (and unclassified) data.
+
+## Preliminary Look at the Data
+
+Now that the data is loaded, we can begin taking a preliminary peak at the data to determine its components and structure.  
+
+```{r}
+#Explore
+str(train)
+str(test_valid)
+
+head(train)
+table(train$is_attributed)
+
+#Missing Data?
+colSums(is.na(train)) #none
+```
+
+Luckily, there is no missing data in our dataset. Additionally, we can see there is a difference between the data provided in the `train` and `test_valid` datasets. We will take care of this later. For now, we will work primarily with the train set, which will be partitioned into a train set and test set to see if our models generalize to the full `train` dataframe effectively. We will also reformat our `click_time` feature by extracting specific time information such as year and month.
+
+## Data Cleaning & Feature Engineering
+
+First, we will remove the `attributed_time` feature since it isn't present in the `test_valid` dataset. 
+
+```{r}
+train$attributed_time=NULL 
+```
+
+Next, I will engineer the time feature into multiple features. 
+```{r}
+#Reformat click_time feature
+train$click_time<-as.POSIXct(train$click_time,
+                             format = "%Y-%m-%d %H:%M",tz = "America/New_York")
+
+train$year <- year(train$click_time) #year
+train$month <- month(train$click_time) #month
+train$days <- weekdays(train$click_time) #weekdays
+train$hour <- hour(train$click_time) #hour
+
+#Remove original feature now that needed information is extracted into 
+#new features
+train$click_time=NULL
+```
+
+Now, let's take a look at how many unique variables we have in each column.
+
+```{r}
+#Determine number of unique observations per column
+apply(train,2, function(x) length(unique(x)))
+```
+
+As we can see above, the data only reflects information that was collected over a single month within a single year. Because these fields don't provide helpful information, we will remove the month and year fields.
+
+```{r}
+train$month=NULL #only 1 month present: feature no longer needed
+train$year=NULL #only 1 year present: feature no longer needed
+```
+
+Lastly, we will factorize our binary response variable (`is_attributed`) and days of the week. 
+```{r}
+#Format appropriate columns as factors
+train$is_attributed=as.factor(train$is_attributed)
+train$days=as.factor(train$days)
+```
+
+## Exploratory Data Analysis (EDA) & Visualization 
+
+Now that our data is prepared for analysis, the EDA process begins. The purpose of the exploratory data analysis is to discover insights provided by the data. More specifically, I am interested in discovering which features will make good predictors of app downloads. That is, *"...which fields are significantly related to the response variable?"*. 
+
+First, we will explore the relationship between app downloads (`is_attributed`) and app ID. We will mainly use visualization techniques that best show feature distributions: density plot, violin plot and boxplot.
+
+```{r}
+p1 <- ggplot(train,aes(x=app,fill=is_attributed)) +
+  geom_density()+
+  facet_grid(is_attributed~.) +
+  scale_x_continuous(breaks = c(0,50,100,200,300,400)) +
+  ggtitle("Application ID v. Downloads - Density plot") +
+  xlab("App ID") +
+  labs(fill = "is_attributed") +
+  theme_bw()
+
+
+p2 <- ggplot(train,aes(x=is_attributed,y=app,fill=is_attributed) )+
+  geom_violin() +
+  ggtitle("Application ID v. Downloads - Violin plot") +
+  xlab("App ID") +
+  labs(fill = "is_attributed") +
+  theme_bw()
+
+p3 <- ggplot(train,aes(x=is_attributed,y=app,fill=is_attributed)) +
+  geom_boxplot() +
+  ggtitle("Application ID v. Downloads - Boxplot") +
+  xlab("App ID") +
+  labs(fill = "is_attributed") + 
+  theme_bw()
+
+
+grid.arrange(p1,p2,p3, nrow = 2, ncol = 2)
+```
+
+This will be a helpful feature to determine whether a user downloaded an app or not.
+
+I create a similar graph grid for the response variable vs. the OS version (`os`):
+
+```{r echo = FALSE}
+p4 <- ggplot(train,aes(x=is_attributed,y=os,fill=is_attributed)) +
+  geom_boxplot() +
+  ggtitle("OS Version v. Downloads - Boxplot") +
+  xlab("OS version") +
+  labs(fill = "is_attributed") +
+  theme_bw()
+
+p5 <- ggplot(train,aes(x=os,fill=is_attributed)) +
+  geom_density()+facet_grid(is_attributed~.) +
+  scale_x_continuous(breaks = c(0,50,100,200,300,400)) +
+  ggtitle("OS Version v. Downloads - Density plot")+
+  xlab("Os version") +
+  labs(fill = "is_attributed") +
+  theme_bw()
+
+p6 <- ggplot(train,aes(x=is_attributed,y=os,fill=is_attributed)) +
+  geom_violin() +
+  ggtitle("OS Version v. Downloads - Violin plot") +
+  xlab("Os version") +
+  labs(fill = "is_attributed") +
+  theme_bw()
+
+
+grid.arrange(p4,p5,p6, nrow = 2, ncol = 2)
+```
+
+There doesn't appear to be a very strong relationship between the two. We will remove this feature.
+
+Next, we look at IP address (`ip`):
+```{r echo = FALSE}
+p7 <- ggplot(train,aes(x=is_attributed,y=ip,fill=is_attributed))+
+  geom_boxplot()+
+  ggtitle("Downloads v. IP Address - Boxplot")+
+  xlab("Ip Adresss of click") +
+  labs(fill = "is_attributed")+
+  theme_bw()  
+
+p8 <- ggplot(train,aes(x=ip,fill=is_attributed))+
+  geom_density()+facet_grid(is_attributed~.)+
+  scale_x_continuous(breaks = c(0,50,100,200,300,400))+
+  ggtitle("Downloads v. IP Address - Density plot")+
+  xlab("Ip Adresss of click") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+
+p9 <- ggplot(train,aes(x=is_attributed,y=ip,fill=is_attributed))+
+  geom_violin()+
+  ggtitle("Downloads v. IP Address <- Violin plot")+
+  xlab("Ip Adresss of click") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+grid.arrange(p7,p8, p9, nrow=2,ncol=2)
+```
+
+We can clearly see a very strong relationship between the distributions of IP address and downloads in all 3 graphs. I will retain this feature.
+
+Next, we pair our response variable with device type (`device`):
+```{r echo = FALSE}
+p10 <- ggplot(train,aes(x=device,fill=is_attributed))+
+  geom_density()+facet_grid(is_attributed~.)+
+  ggtitle("Downloaded v. Device Type - Density plot")+
+  xlab("Device Type ID") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+
+p11 <- ggplot(train,aes(x=is_attributed,y=device,fill=is_attributed))+
+  geom_boxplot()+
+  ggtitle("Downloaded v. Device Type - Box plot")+
+  xlab("Device Type ID") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+
+p12 <- ggplot(train,aes(x=is_attributed,y=device,fill=is_attributed))+
+  geom_violin()+
+  ggtitle("Downloaded v. Device Type - Violin plot")+
+  xlab("Device Type ID") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+grid.arrange(p10,p11, p12, nrow=2,ncol=2)
+```
+
+We do not see a strong indication of differentiation in any of the above charts. This feature will be removed.
+
+Next, `channel`, or channel ID:
+```{r echo = FALSE}
+p13<- ggplot(train,aes(x=channel,fill=is_attributed))+
+  geom_density()+facet_grid(is_attributed~.)+
+  ggtitle("Dowloaded v Channel ID - Density plot")+
+  xlab("Channel of mobile") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+
+p14<- ggplot(train,aes(x=is_attributed,y=channel,fill=is_attributed))+
+  geom_boxplot()+
+  ggtitle("Dowloaded v Channel ID - Boxplot")+
+  xlab("Channel of mobile") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+p15 <- ggplot(train,aes(x=is_attributed,y=channel,fill=is_attributed))+
+  geom_violin()+
+  ggtitle("Dowloaded v Channel ID - Violin plot")+
+  xlab("Channel of mobile") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+grid.arrange(p13,p14, p15, nrow=2,ncol=2)
+```
+
+Much like the IP address distributions, we can clearly see a strong differentiation in the distributions of channel ID and our response variable. Given its predictive power, we will retain the `channel` feature.
+
+Next, let's see if time is relevant. First, we'll explore the hour of the day:
+
+```{r echo = FALSE}
+p16 <- ggplot(train,aes(x=hour,fill=is_attributed))+
+  geom_density()+facet_grid(is_attributed~.)+
+  ggtitle("Time v. Download - Density plot")+
+  xlab("Hour") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+p17<- ggplot(train,aes(x=is_attributed,y=hour,fill=is_attributed))+
+  geom_boxplot()+
+  ggtitle("Time v. Download - Boxplot")+
+  xlab("Hour") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+p18 <- ggplot(train,aes(x=is_attributed,y=channel,fill=is_attributed))+
+  geom_violin()+
+  ggtitle("Time v. Download - Violin plot")+
+  xlab("Hour") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+grid.arrange(p16,p17, p18, nrow=2,ncol=2)
+```
+
+There is a small observable difference in the average number of downloads for both "download" and "no download" groups. It's not much (as we will quantify later using the AUC method), but we will keep this feature. 
+
+Lastly, let's see how the days of the week, `days`,  vary in comparison with our response variable:
+
+```{r echo = FALSE}
+p19 <- ggplot(train,aes(x=days,fill=is_attributed))+
+  geom_density()+
+  facet_grid(is_attributed~.)+
+  ggtitle("Day of Week v. Downloads")+
+  xlab("Os version") +
+  labs(fill = "is_attributed")+
+  theme_bw()
+
+
+p20 <- ggplot(train,aes(x=days,fill=is_attributed))+
+  geom_density(col=NA,alpha=0.35)+
+  ggtitle("days v/s click")+
+  xlab("Day of Week v. Downloads") +
+  ylab("Total Count") +
+  labs(fill = "is_attributed") +
+  theme_bw()
+
+grid.arrange(p19,p20, ncol=2)
+```
+
+No strong differentiation.
+
+## Cross Validation & Modeling
+
+Let's begin some modeling. First (for the sake of comparison), I will model on *all features* as opposed to the ones we've selected earlier in the EDA section.
+
+I begin to design my multi-folded, cross validation:
+
+```{r}
+#Cross Validation
+set.seed(1)
+cv.10 <- createMultiFolds(train$is_attributed, k = 10, times = 10)
+myControl <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                     index = cv.10)
+```
+
+The first algorithm we will explore is the **decision tree**. 
+
+```{r}
+set.seed(1)
+dt <- caret::train(x = train[,-6], y = train[,6], method = "rpart", tuneLength = 30,
+                   trControl = myControl)
+```
+
+Next, I will create a confusion matrix and store its results in a results table called `model.results`. We will review these results later in the evaluation phase.
+
+```{r}
+pred <- predict(dt$finalModel,train, type = "class")
+confusionMatrix(pred,train$is_attributed)
+
+#Decision Tree #1 Performance
+dt.misclass <- mean(train$is_attributed != pred)
+dt.accuracy <- 1 - dt.misclass
+dt.f1 <- F_meas(data = pred, reference = factor(train$is_attributed))
+
+model.results <- data.frame(method = "Decision Tree: All Feat.", 
+                            misclass = dt.misclass, 
+                            accuracy = dt.accuracy,
+                            f1_Score = dt.f1) #stores results
+```
+
+In the table, I include the misclassification rate, accuracy and F1 score. We will compare these results with other algorithms in the "Results Evaluation" section later in the report.
+
+Next, I create the same decision tree model, only this time on our select featues:
+
+```{r}
+#Remove undesired features
+train$days=NULL
+train$os=NULL
+train$device=NULL
+
+#Model decision tree on select features
+set.seed(1)
+dt.2 <- caret::train(x = train[,-4], y = train[,4], method = "rpart", tuneLength = 30,
+                    trControl = myControl)
+```
+
+Now, we calculate our key metrics of performance and assign it to the `model.results` object.  
+
+```{r}
+pred.2 <- predict(dt.2$finalModel,data = train,type="class")
+confusionMatrix(pred.2,train$is_attributed) #better specificity
+
+#Decision Tree 2 Performance Accessment
+dt.2.misclass <- mean(train$is_attributed != pred.2)
+dt.2.accuracy <- 1 - dt.2.misclass
+dt.2.f1 <- F_meas(data = pred.2, reference = factor(train$is_attributed))
+
+model.results <- bind_rows(model.results, 
+                           data.frame(method = "Decision Tree: Select Features",
+                                      misclass = dt.2.misclass, 
+                                      accuracy = dt.2.accuracy,
+                                      f1_Score = dt.2.f1))#add results to table
+
+```
+
+If I print the object, you'll notice that the performance of the 2 decision trees are nearly identical...
+
+```{r}
+print(model.results)
+```
+
+However, you will note that the specificity is better in the second decision tree.
+
+```{r echo = FALSE}
+spec <- specificity(pred, train$is_attributed, positive = "1")
+spec2 <- specificity(pred.2, train$is_attributed, positive = "1")
+kable(data.frame("Specificity:Tree1" = spec, "Specificity:Tree2" = spec2))
+```
+
+Now that we've identified a relatively reliable method (decision trees), let's move forward with generalizing our models to a test set (unseen data).
+
+First, I partition the data into a train and test set:
+
+```{r}
+set.seed(1)
+train_index <- createDataPartition(train$is_attributed,times=1,p=0.7,list=FALSE)
+train <- train[train_index,]
+test <- train[-train_index,]
+```
+
+Next, I need to address how unbalanced the data is. That is, there are far more non-downloads than downloads. To resolve this matter, I want to rebalance my data. I do this, using the SMOTE ("Synthetic Minority Oversampling") techique. This is a statistical technique for increasing the number of cases in your dataset in a balanced way.
+
+```{r}
+#Rebalance the data since there is a low prevelance of downloads
+set.seed(1)
+smote.train = SMOTE(is_attributed ~ ., data  = train)   
+table(smote.train$is_attributed) 
+```
+
+As you can see, the data is better balanced now. Because we have our selected features and rebalanced data, now would be agreat time to take a look at the resulting ROC Curve to review the TP and FP tradeoff for each feature:
+
+
+```{r}
+colAUC(smote.train[,-4],smote.train[,4], plotROC = TRUE)
+```
+
+Based on the visualization and the AUC outputs, the app ID is the best discriminant. Just as expected from our EDA section, the hour feature performs the worst with an AUC of 0.58.  
+
+Now, I re-attempt the decision tree on select features, only this time with the rebalanced data
+
+```{r}
+set.seed(1)
+cv.10 <- createMultiFolds(smote.train$is_attributed, k = 10, times = 10)
+myControl <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                     index = cv.10)
+
+set.seed(1)
+dt.3 <- caret::train(x = smote.train[,-4], y = smote.train[,4], method = "rpart", tuneLength = 30,
+                   trControl = myControl)
+
+```
+
+You can see a plot of the results here:
+
+```{r echo = FALSE}
+rpart.plot(dt.3$finalModel, extra = 3, fallen.leaves = F, tweak = 1.5, gap = 0, space = 0)
+```
+
+Now, we add the results to our table the same as I did in the previous examples. Note that the predictions were made on the test dataset this time to generalize the model. This will be the case moving forward:
+
+```{r echo = FALSE}
+pred.3 <- predict(dt.3$finalModel,newdata=test,type="class")
+confusionMatrix(pred.3,test$is_attributed)
+
+dt.3.misclass <- mean(test$is_attributed != pred.3)
+dt.3.accuracy <- 1 - dt.3.misclass
+dt.3.f1 <- F_meas(data = pred.3, reference = factor(test$is_attributed))
+
+model.results <- bind_rows(model.results, 
+                           data.frame(method = "Decision Tree: + Rebalanced",
+                                      misclass = dt.3.misclass, 
+                                      accuracy = dt.3.accuracy,
+                                      f1_Score = dt.3.f1))#add results to table
+
+print(model.results)
+```
+
+As a natural progression, I will try a **random forest** model on the reblanced, select features:
+
+```{r}
+#Random Forest Model, select features + rebalanced data
+set.seed(1)
+cv.10 <- createMultiFolds(smote.train$is_attributed, k = 10, times = 10)
+myControl <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                     index = cv.10)
+
+set.seed(1)
+set.seed(1)
+rf<- caret::train(x = smote.train[,-4], y = smote.train[,4], method = "rf", tuneLength = 3,
+             ntree = 100, trControl = myControl)
+```
+
+Then, the results are stored.
+
+```{r echo = FALSE}
+pred.rf <- predict(rf,newdata = test)
+confusionMatrix(pred.rf,test$is_attributed)
+
+dt.4.misclass <- mean(test$is_attributed != pred.rf)
+dt.4.accuracy <- 1 - dt.4.misclass
+dt.4.f1 <- F_meas(data = pred.rf, reference = factor(test$is_attributed))
+
+model.results <- bind_rows(model.results, 
+                           data.frame(method = "Random Forest",
+                                      misclass = dt.4.misclass, 
+                                      accuracy = dt.4.accuracy,
+                                      f1_Score = dt.4.f1))#add results to table
+
+print(model.results)
+```
+
+Let's try another model. This time, I will use a **linear support vector machine**.
+
+```{r}
+set.seed(1)
+svm.model <- tune.svm(is_attributed~.,data=smote.train, kernel="linear", cost=c(0.1,0.5,1,5,10,50))
+
+best.linear.svm <- svm.model$best.model
+pred.svm.lin <- predict(best.linear.svm,newdata=test,type="class")
+
+#Performance Evaluation
+confusionMatrix(pred.svm.lin,test$is_attributed)
+
+dt.5.misclass <- mean(test$is_attributed != pred.svm.lin)
+dt.5.accuracy <- 1 - dt.5.misclass
+dt.5.f1 <- F_meas(data = pred.svm.lin, reference = factor(test$is_attributed))
+
+model.results <- bind_rows(model.results, 
+                           data.frame(method = "Linear Support Vector Machine",
+                                      misclass = dt.5.misclass, 
+                                      accuracy = dt.5.accuracy,
+                                      f1_Score = dt.5.f1))#add results to table
+```
+
+Lastly, I will use and evaluate a **radial kernal support vector machine**
+
+```{r}
+#Radial Kernal Support Vector Machine (SVM)
+set.seed(1)
+svm.model.2 <- tune.svm(is_attributed~.,data=smote.train,kernel="radial",gamma=seq(0.1,5))
+summary(svm.model.2)
+
+best.radial.svm <- svm.model.2$best.model
+
+pred.svm.rad <- predict(best.radial.svm,newdata = test)
+
+#Performance Evaluation
+
+confusionMatrix(pred.svm.rad,test$is_attributed)
+
+dt.6.misclass <- mean(test$is_attributed != pred.svm.rad)
+dt.6.accuracy <- 1 - dt.6.misclass
+dt.6.f1 <- F_meas(data = pred.svm.rad, reference = factor(test$is_attributed))
+
+model.results <- bind_rows(model.results, 
+                           data.frame(method = "Radial Kernal Support Vector Machine",
+                                      misclass = dt.6.misclass, 
+                                      accuracy = dt.6.accuracy,
+                                      f1_Score = dt.6.f1))#add results to table
+```
+
+Now that we have all of our models and their performances saved to `model.results`, let's evaluate them:
+
+## Results Evaluation
+
+```{r}
+kable(model.results) #First 2 models were trained and tested on same (train) data. 
+```
+
+The first two decision tree models performed well as expected, because they were not predicted on unseen data. Thus, while the results are favorable, it is likely that these models are over fitted and will not generalize to the test set well. 
+
+Thus, the third decision tree model is tested on "unseen" data (the test set). We may also note that the third decision tree was tested on select features. Also note that the data was rebalanced to account for the low prevalence of app downloads (which is a very rare occurrence). As expected, it didn't perform as well as the over fitted decision tree models, but it still performed fairly well (ie: 96% F1 score with 93% accuracy). 
+
+The **random forest** was a natural progression from the third decision tree model and an enhanced performer with an **accuracy of 96%** and **F1 score of 98%**.
+
+While the linear and radial kernal support vector machines were respectable attempts (the latter even moreso), they did not outperform the random forest model.
+
+Thus, the random forest model is the superior model.
+
+
+## Conclusion
+
+As a conclusion, the random forest was the best model with a superior F1 score, accuracy and misclassification rate once the data is rebalanced and our features were selected. 
+
+For future analysis, logistic regression should  be considered as well, however since the goal of this capstone was to go beyond regression methods, I omitted it from this exercise. 
+
+Additionally, because the hour feature had the worst performance from all predictors, it may be worth removing the feature for future modeling purposes. 
+
+I would also recommend to TalkingData to consider additional features, which may be better predictors of fraudulent click activity (ie: type of app, ad channel, ad popularity, etc.).
+
+The final script has results for the predictions on unseen, unclassified `test_valid` data, which should also be evaluated once / if their actual values are collected.
